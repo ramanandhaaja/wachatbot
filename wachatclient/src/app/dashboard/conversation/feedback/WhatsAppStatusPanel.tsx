@@ -10,6 +10,7 @@ export function WhatsAppStatusPanel() {
   const isConnected = whatsAppState.state === 'CONNECTED';
   const isConnecting = whatsAppState.state === 'QR_READY' || whatsAppState.state === 'INITIALIZING';
   const isDisconnected = whatsAppState.state === 'DISCONNECTED';
+  const canConnect = !isLoading && !isConnecting && (!whatsAppState.state || isDisconnected);
 
   return (
     <div className="p-4 border-b border-gray-200">
@@ -29,7 +30,7 @@ export function WhatsAppStatusPanel() {
         )}
 
         {error && (
-          <div className="text-red-500 mb-2">{error}</div>
+          <div className="text-red-500 mb-2">{error?.toString()}</div>
         )}
 
         {!isConnected && (
@@ -62,11 +63,12 @@ export function WhatsAppStatusPanel() {
                   console.error('Failed to connect WhatsApp:', error);
                 }
               }}
-              disabled={isLoading || isConnecting}
+              disabled={!canConnect}
             >
               {isLoading ? 'Initializing...' : 
                whatsAppState.state === 'QR_READY' ? 'Waiting for QR scan...' :
                whatsAppState.state === 'INITIALIZING' ? 'Preparing QR code...' :
+               isDisconnected ? 'Reconnect WhatsApp' :
                'Connect WhatsApp'}
             </Button>
           </div>
@@ -81,10 +83,9 @@ export function WhatsAppStatusPanel() {
               onClick={async () => {
                 if (userId) await startSession(userId);
               }}
-            >
-              Refresh Status
+            > 
+              Check Connection Status
             </Button>
-            
           </div>
         )}
       </div>

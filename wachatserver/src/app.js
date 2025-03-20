@@ -7,6 +7,7 @@ const app = express();
 app.use(cors());
 
 const sessions = new Map();
+const QR_TIMEOUT = 30000; // 3 minutes timeout for QR code scanning
 
 const getSession = (id) => {
   return sessions.get(id);
@@ -31,7 +32,7 @@ const deleteSession = async (id) => {
     // Always remove from sessions map
     sessions.delete(id);
   }
-};
+}; 
 
 // Middleware
 app.use(express.json());
@@ -60,23 +61,83 @@ const createSession = async (id) => {
     client,
     qr: null,
     ready: false,
-    lastActivity: Date.now()
+    lastActivity: Date.now(),
+    retryCount: 0,
+    state: 'INITIALIZING',
+    hasGeneratedQR: false
   });
 
   // Set up event handlers
+  let qrTimeout;
+  
   client.on("qr", (qr) => {
     console.log(`QR for ${id}: ${qr}`);
     const session = getSession(id);
-    if (session) {
+    if (session && !session.hasGeneratedQR) {
+      // Update session with QR flag
+      setSession(id, { ...session, hasGeneratedQR: true });
+      
+      // Set timeout to destroy session if QR not scanned
+      if (qrTimeout) clearTimeout(qrTimeout);
+      qrTimeout = setTimeout(async () => {
+        console.log(`QR code timeout for session ${id}`);
+        const currentSession = getSession(id);
+        if (currentSession?.state === 'QR_READY' && !currentSession.ready) {
+          console.log(`Destroying session ${id} due to QR timeout`);
+          await deleteSession(id);
+        }
+      }, QR_TIMEOUT);
+      
       setSession(id, { ...session, qr, state: 'QR_READY' });
     }
   });
 
   client.on("ready", () => {
     console.log(`Client ${id} is ready`);
+    // Clear QR timeout when successfully connected
+    if (qrTimeout) {
+      clearTimeout(qrTimeout);
+      qrTimeout = null;
+    }
+    
     const session = getSession(id);
     if (session) {
-      setSession(id, { ...session, ready: true, qr: null, state: 'CONNECTED' });
+      // Keep hasGeneratedQR flag but update other state
+      setSession(id, { 
+        ...session, 
+        ready: true, 
+        qr: null, 
+        state: 'CONNECTED'
+      });
+    }
+  });
+
+  client.on("disconnected", async (reason) => {
+    console.log(`Client ${id} disconnected:`, reason);
+    const session = getSession(id);
+    if (session) {
+      try {
+        // Update session state first
+        setSession(id, { ...session, ready: false, state: 'DISCONNECTED', qr: null });
+        
+        // Destroy the client properly
+        await client.destroy();
+        // Remove client from sessions
+        delete sessions[id];
+        console.log(`Client ${id} cleaned up successfully`);
+      } catch (err) {
+        console.error(`Error cleaning up client ${id}:`, err);
+      }
+    }
+  });
+
+  client.on("auth_failure", async (msg) => {
+    console.error(`Auth failure for client ${id}:`, msg);
+    const session = getSession(id);
+    if (session) {
+      setSession(id, { ...session, ready: false, state: 'DISCONNECTED' });
+      // Clean up the session on auth failure
+      await deleteSession(id);
     }
   });
 
@@ -100,14 +161,6 @@ const createSession = async (id) => {
     }
   });
 
-  client.on("disconnected", async () => {
-    console.log(`Client ${id} disconnected`);
-    const session = getSession(id);
-    if (session) {
-      setSession(id, { ...session, state: 'DISCONNECTED', ready: false });
-    }
-    await deleteSession(id);
-  });
 
   try {
     await client.initialize();
@@ -119,6 +172,31 @@ const createSession = async (id) => {
   }
 };
 
+// Get session status
+app.get("/session/:id/status", async (req, res) => {
+  const { id } = req.params;
+  const session = getSession(id);
+
+  if (!session) {
+    return res.json({
+      success: false,
+      state: 'DISCONNECTED',
+      qr: null,
+      message: 'No active session'
+    });
+  }
+
+  return res.json({
+    success: true,
+    state: session.state,
+    qr: session.qr,
+    message: session.state === 'CONNECTED' ? 'WhatsApp is connected' :
+             session.state === 'QR_READY' ? 'Please scan the QR code' :
+             session.state === 'INITIALIZING' ? 'Initializing WhatsApp' :
+             'Session is disconnected'
+  });
+});
+
 // Start a session for a user
 app.post("/start-session", async (req, res) => {
   let id;
@@ -129,6 +207,15 @@ app.post("/start-session", async (req, res) => {
         success: false,
         error: 'Missing id in request body'
       });
+    }
+
+    // Clean up any existing session first
+    const existingSession = getSession(id);
+    if (existingSession) {
+      console.log(`Cleaning up existing session for ${id}`);
+      await deleteSession(id);
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     await createSession(id);
@@ -202,29 +289,5 @@ app.post("/send-message", async (req, res) => {
   }
 });
 
-
-// Get session status
-app.get("/session/:id/status", (req, res) => {
-  const { id } = req.params;
-  const session = getSession(id);
-
-  if (!session) {
-    return res.json({
-      success: true,
-      state: 'DISCONNECTED',
-      qr: null,
-      message: 'No active session'
-    });
-  }
-
-  res.json({
-    success: true,
-    state: session.state,
-    qr: session.qr,
-    message: session.state === 'CONNECTED' ? 'WhatsApp is connected' : 
-             session.state === 'QR_READY' ? 'Please scan the QR code' :
-             session.state === 'INITIALIZING' ? 'Initializing WhatsApp' : 'Disconnected'
-  });
-});
 
 module.exports = app;
