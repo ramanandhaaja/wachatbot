@@ -83,7 +83,20 @@ const createSession = async (id) => {
         console.log(`QR code timeout for session ${id}`);
         const currentSession = getSession(id);
         if (currentSession?.state === 'QR_READY' && !currentSession.ready) {
-          console.log(`Destroying session ${id} due to QR timeout`);
+          console.log(`QR code expired for session ${id}`);
+          // Update session state to DISCONNECTED first
+          setSession(id, { 
+            ...currentSession, 
+            state: 'DISCONNECTED',
+            qr: null,
+            message: 'QR code expired. Please try connecting again.'
+          });
+          
+          // Give frontend a moment to fetch the updated state
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Then delete the session
+          console.log(`Cleaning up session ${id}`);
           await deleteSession(id);
         }
       }, QR_TIMEOUT);

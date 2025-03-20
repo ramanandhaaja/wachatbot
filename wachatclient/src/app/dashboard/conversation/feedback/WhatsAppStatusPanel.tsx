@@ -30,7 +30,7 @@ export function WhatsAppStatusPanel() {
         )}
 
         {error && (
-          <div className="text-red-500 mb-2">{error?.toString()}</div>
+          <div className="text-red-500 mb-2">{/*error?.toString()*/}</div>
         )}
 
         {!isConnected && (
